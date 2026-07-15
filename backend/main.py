@@ -5,9 +5,10 @@ main.py — بک‌اند پُرسیت (FastAPI + OpenAI).
 - تبدیل زبان طبیعی به SQL با tool-calling، اجرای «فقط SELECT» روی SQLite با اعتبارسنجی.
 اجرا (محلی):  uvicorn main:app --reload --port 8000
 """
-import os, re, json, sqlite3, time
+import os, re, json, sqlite3, time, hmac
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -15,7 +16,27 @@ from openai import OpenAI
 load_dotenv()
 DB_PATH = os.path.join(os.path.dirname(__file__), "porsit.db")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# --- مدیریت کلید OpenAI ---
+# اولویت: کلیدی که ادمین از صفحهٔ /admin وارد کرده (فایل .runtime_key) → متغیر محیطی.
+# توجه: در هاست‌های با دیسک موقت (مثل پلن رایگان Render) این فایل بعد از ری‌استارت
+# پاک می‌شود؛ متغیر محیطی OPENAI_API_KEY راه ماندگار است و /admin راه سریع/چرخش کلید.
+KEY_FILE = os.path.join(os.path.dirname(__file__), ".runtime_key")
+_runtime_key = None
+try:
+    with open(KEY_FILE) as _f:
+        _runtime_key = _f.read().strip() or None
+except OSError:
+    pass
+
+def current_key() -> str:
+    return _runtime_key or os.getenv("OPENAI_API_KEY") or ""
+
+def get_client() -> OpenAI:
+    key = current_key()
+    if not key:
+        raise HTTPException(503, "کلید OpenAI هنوز تنظیم نشده است؛ از صفحهٔ /admin آن را وارد کنید.")
+    return OpenAI(api_key=key)
 
 if not os.path.exists(DB_PATH):
     print("porsit.db یافت نشد — در حال ساخت…")
@@ -114,7 +135,78 @@ class AskReq(BaseModel):
 
 @app.get("/")
 def health():
-    return {"ok": True, "range": [MIN_NAME, MAX_NAME]}
+    return {"ok": True, "range": [MIN_NAME, MAX_NAME], "key_configured": bool(current_key())}
+
+# --- پنل ادمین: واردکردن کلید OpenAI بدون رفتن به داشبورد هاست ---
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
+ADMIN_HTML = """<!DOCTYPE html>
+<html dir="rtl" lang="fa"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>پنل ادمین پُرسیت</title>
+<style>
+ body{font-family:Tahoma,Vazirmatn,sans-serif;background:#faf9f5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+ .card{background:#fff;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.08);padding:32px;width:min(420px,90vw)}
+ h1{font-size:18px;margin:0 0 4px}
+ p{color:#666;font-size:13px;margin:0 0 20px;line-height:1.8}
+ label{display:block;font-size:13px;margin:12px 0 6px}
+ input{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;direction:ltr}
+ button{width:100%;margin-top:20px;padding:12px;border:0;border-radius:10px;background:linear-gradient(135deg,#ff8a3d,#ff6a00);color:#fff;font-size:15px;cursor:pointer}
+ #msg{margin-top:14px;font-size:13px;line-height:1.8;white-space:pre-wrap}
+ .ok{color:#1a7f37}.err{color:#c62828}
+</style></head><body>
+<div class="card">
+ <h1>پنل ادمین پُرسیت</h1>
+ <p>کلید OpenAI را این‌جا وارد کن؛ کلید فقط روی سرور ذخیره می‌شود و هرگز به فرانت یا Git نمی‌رود.</p>
+ <label>رمز ادمین (ADMIN_PASSWORD)</label>
+ <input id="pw" type="password" autocomplete="current-password">
+ <label>کلید OpenAI (sk-...)</label>
+ <input id="key" type="password" autocomplete="off" placeholder="sk-...">
+ <button onclick="save()">ذخیرهٔ کلید</button>
+ <div id="msg"></div>
+</div>
+<script>
+async function save(){
+  const m=document.getElementById('msg'); m.textContent='در حال ذخیره…'; m.className='';
+  try{
+    const r=await fetch('/admin/key',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password:document.getElementById('pw').value,key:document.getElementById('key').value})});
+    const d=await r.json();
+    if(r.ok){m.textContent='✅ '+d.message; m.className='ok';}
+    else{m.textContent='❌ '+(d.detail||'خطا'); m.className='err';}
+  }catch(e){m.textContent='❌ '+e; m.className='err';}
+}
+</script></body></html>"""
+
+class AdminKeyReq(BaseModel):
+    password: str
+    key: str
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page():
+    return ADMIN_HTML
+
+@app.post("/admin/key")
+def admin_set_key(req: AdminKeyReq):
+    global _runtime_key
+    if not ADMIN_PASSWORD:
+        raise HTTPException(403, "پنل ادمین غیرفعال است؛ ابتدا متغیر محیطی ADMIN_PASSWORD را روی سرور ست کنید.")
+    if not hmac.compare_digest(req.password or "", ADMIN_PASSWORD):
+        time.sleep(1)  # کندکردن حدس‌زدن رمز
+        raise HTTPException(403, "رمز ادمین نادرست است.")
+    key = (req.key or "").strip()
+    if not key.startswith("sk-") or len(key) < 20:
+        raise HTTPException(400, "کلید معتبر به نظر نمی‌رسد (باید با sk- شروع شود).")
+    _runtime_key = key
+    try:
+        with open(KEY_FILE, "w") as f:
+            f.write(key)
+        os.chmod(KEY_FILE, 0o600)
+        persisted = "و ذخیره شد"
+    except OSError:
+        persisted = "(فقط در حافظه — بعد از ری‌استارت باید دوباره وارد شود)"
+    masked = key[:6] + "…" + key[-4:]
+    return {"message": f"کلید {masked} فعال {persisted}. حالا «پرسیدن» در اپ کار می‌کند."}
 
 @app.post("/api/v1/ask")
 def ask(req: AskReq):
@@ -126,6 +218,7 @@ def ask(req: AskReq):
             messages.append({"role": m["role"], "content": str(m["content"])})
     messages.append({"role": "user", "content": req.question})
 
+    client = get_client()
     last_sql = ""
     t0 = time.time()
     try:

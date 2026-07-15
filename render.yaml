@@ -6,6 +6,11 @@ services:
     plan: free
     autoDeploy: true
     envVars:
+      # رمز ورود به پنل /admin — آن‌جا می‌توانی کلید OpenAI را از مرورگر وارد کنی.
+      - key: ADMIN_PASSWORD
+        sync: false
+      # کلید OpenAI. اگر این‌جا خالی بماند، از پنل /admin هم قابل واردکردن است
+      # (ولی env var ماندگارتر است؛ کلیدِ واردشده از پنل بعد از ری‌استارت پاک می‌شود).
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
