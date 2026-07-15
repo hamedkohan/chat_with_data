@@ -152,6 +152,7 @@ ADMIN_HTML = """<!DOCTYPE html>
  label{display:block;font-size:13px;margin:12px 0 6px}
  input{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;direction:ltr}
  button{width:100%;margin-top:20px;padding:12px;border:0;border-radius:10px;background:linear-gradient(135deg,#ff8a3d,#ff6a00);color:#fff;font-size:15px;cursor:pointer}
+ button.alt{margin-top:10px;background:#fff;color:#ff6a00;border:1px solid #ff8a3d}
  #msg{margin-top:14px;font-size:13px;line-height:1.8;white-space:pre-wrap}
  .ok{color:#1a7f37}.err{color:#c62828}
 </style></head><body>
@@ -162,25 +163,49 @@ ADMIN_HTML = """<!DOCTYPE html>
  <input id="pw" type="password" autocomplete="current-password">
  <label>کلید OpenAI (sk-...)</label>
  <input id="key" type="password" autocomplete="off" placeholder="sk-...">
- <button onclick="save()">ذخیرهٔ کلید</button>
+ <button onclick="save()">ذخیره و تست کلید</button>
+ <button class="alt" onclick="test()">فقط تستِ کلیدِ ذخیره‌شده</button>
  <div id="msg"></div>
 </div>
 <script>
-async function save(){
-  const m=document.getElementById('msg'); m.textContent='در حال ذخیره…'; m.className='';
+async function call(url, body, busy){
+  const m=document.getElementById('msg'); m.textContent=busy; m.className='';
   try{
-    const r=await fetch('/admin/key',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({password:document.getElementById('pw').value,key:document.getElementById('key').value})});
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
-    if(r.ok){m.textContent='✅ '+d.message; m.className='ok';}
+    if(r.ok){m.textContent=d.message; m.className=d.message.includes('⚠️')?'err':'ok';}
     else{m.textContent='❌ '+(d.detail||'خطا'); m.className='err';}
   }catch(e){m.textContent='❌ '+e; m.className='err';}
 }
+function save(){call('/admin/key',{password:document.getElementById('pw').value,key:document.getElementById('key').value},'در حال ذخیره و تست (تا ۲۰ ثانیه)…');}
+function test(){call('/admin/test',{password:document.getElementById('pw').value},'در حال تست (تا ۲۰ ثانیه)…');}
 </script></body></html>"""
 
 class AdminKeyReq(BaseModel):
     password: str
     key: str
+
+class AdminTestReq(BaseModel):
+    password: str
+
+def _check_key(key: str):
+    """تست واقعی کلید: یک فراخوانی خیلی کوچک به همان مدلی که /ask استفاده می‌کند."""
+    try:
+        OpenAI(api_key=key, timeout=20, max_retries=0).chat.completions.create(
+            model=MODEL, messages=[{"role": "user", "content": "hi"}], max_tokens=1,
+        )
+        return True, f"کلید معتبر است و مدل {MODEL} جواب داد — «پرسیدن» باید کار کند."
+    except Exception as e:
+        s = str(e)
+        if "401" in s or "invalid_api_key" in s or "Incorrect API key" in s:
+            return False, "کلید نامعتبر است. از platform.openai.com → API keys یک کلید تازه بساز و دوباره وارد کن."
+        if "insufficient_quota" in s or "exceeded your current quota" in s or "billing" in s.lower():
+            return False, "کلید درست است ولی حساب OpenAI اعتبار ندارد. در platform.openai.com → Billing شارژ کن."
+        if "model" in s.lower() and ("not found" in s.lower() or "does not have access" in s.lower()):
+            return False, f"این حساب به مدل {MODEL} دسترسی ندارد. در تنظیمات سرور OPENAI_MODEL را عوض کن (مثلاً gpt-4o-mini)."
+        if "429" in s:
+            return False, "محدودیت تعداد درخواست — چند دقیقه صبر کن و دوباره تست کن."
+        return False, f"اتصال به OpenAI برقرار نشد: {s[:200]}"
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page():
@@ -206,7 +231,22 @@ def admin_set_key(req: AdminKeyReq):
     except OSError:
         persisted = "(فقط در حافظه — بعد از ری‌استارت باید دوباره وارد شود)"
     masked = key[:6] + "…" + key[-4:]
-    return {"message": f"کلید {masked} فعال {persisted}. حالا «پرسیدن» در اپ کار می‌کند."}
+    ok, verdict = _check_key(key)
+    prefix = "" if ok else "⚠️ "
+    return {"message": f"{prefix}کلید {masked} ثبت {persisted}. نتیجهٔ تست: {verdict}"}
+
+@app.post("/admin/test")
+def admin_test_key(req: AdminTestReq):
+    if not ADMIN_PASSWORD:
+        raise HTTPException(403, "پنل ادمین غیرفعال است؛ ابتدا متغیر محیطی ADMIN_PASSWORD را روی سرور ست کنید.")
+    if not hmac.compare_digest(req.password or "", ADMIN_PASSWORD):
+        time.sleep(1)
+        raise HTTPException(403, "رمز ادمین نادرست است.")
+    key = current_key()
+    if not key:
+        return {"message": "هنوز هیچ کلیدی روی سرور ثبت نیست — کلید را در فرم بالا وارد و ذخیره کن."}
+    ok, verdict = _check_key(key)
+    return {"message": ("✅ " if ok else "⚠️ ") + verdict}
 
 @app.post("/api/v1/ask")
 def ask(req: AskReq):
