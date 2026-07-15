@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: porsit-api
+    runtime: docker
+    rootDir: backend
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: CORS_ORIGINS
+        value: https://hamedkohan.github.io
