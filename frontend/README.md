@@ -1,21 +1,35 @@
 # فرانت‌اند پُرسیت
 
-فایل HTML اپ («تجربهٔ داده») این‌جا قرار می‌گیرد — به‌صورت `index.html`.
-
-> ⚠️ فایل فرانت هنوز اضافه نشده است. فایل HTML خروجی اپ را در همین پوشه با نام
-> `index.html` قرار بده (یا در چت آپلود کن تا اضافه شود).
+`index.html` نسخهٔ مستقل (standalone) اپ است: تمام منابع داخلش باندل شده و بیرون از
+هر محیط خاصی — روی GitHub Pages، Netlify یا حتی با دابل‌کلیک — اجرا می‌شود.
 
 ## اتصال به بک‌اند
 
-فرانت وقتی `window.PORSIT_API` ست شده باشد، به‌جای حالت درون‌مرورگری به بک‌اند وصل می‌شود.
-بعد از دیپلوی بک‌اند (Render/Railway)، در ابتدای `index.html` و قبل از اسکریپت اپ این خط را بگذار:
+نزدیک ابتدای `index.html` (حدود خط ۱۴) این بلوک هست:
 
 ```html
-<script>window.PORSIT_API = "https://آدرس-بک‌اند-تو";</script>
+// window.PORSIT_API = "https://YOUR-BACKEND-URL";
 ```
+
+بعد از دیپلوی بک‌اند (Render/Railway)، خط را از کامنت دربیاور و آدرس واقعی را بگذار:
+
+```html
+window.PORSIT_API = "https://porsit-api.onrender.com";
+```
+
+- **با `PORSIT_API` ست‌شده:** سؤال‌ها به بک‌اند تو (و OpenAI سمت سرور) می‌روند.
+- **بدون آن:** اپ در حالت درون‌مرورگری بالا می‌آید (دیتابیس نمونه را در خود مرورگر
+  می‌سازد؛ برای این حالت اینترنت لازم است چون sql.js از CDN بارگیری می‌شود) ولی
+  بخش هوش مصنوعی بدون بک‌اند جواب نمی‌دهد.
+
+راه جایگزین برای تست سریع بدون تغییر فایل، در کنسول مرورگر:
+`localStorage.setItem('porsit_api','http://localhost:8000')` و رفرش.
 
 ## میزبانی روی GitHub Pages
 
-1. در تنظیمات مخزن: Settings → Pages → Source = «Deploy from a branch».
-2. Branch = `main` و Folder = `/frontend` (یا root اگر فایل را به ریشه منتقل کردی).
-3. آدرس عمومی: `https://hamedkohan.github.io/chat_with_data/`
+workflow آماده است (`.github/workflows/pages.yml`) و با هر push به `main` پوشهٔ
+`frontend/` را دیپلوی می‌کند. فقط یک بار:
+
+1. Settings → Pages → Source را روی **«GitHub Actions»** بگذار.
+2. آدرس عمومی: `https://hamedkohan.github.io/chat_with_data/`
+3. در پنل Render متغیر `CORS_ORIGINS` را روی `https://hamedkohan.github.io` ست کن.
