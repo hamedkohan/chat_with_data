@@ -4,3 +4,4 @@ __pycache__/
 .env
 porsit.db
 .runtime_key
+.runtime_config.json

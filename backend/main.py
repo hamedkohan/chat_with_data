@@ -15,28 +15,45 @@ from openai import OpenAI
 
 load_dotenv()
 DB_PATH = os.path.join(os.path.dirname(__file__), "porsit.db")
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
-# --- مدیریت کلید OpenAI ---
-# اولویت: کلیدی که ادمین از صفحهٔ /admin وارد کرده (فایل .runtime_key) → متغیر محیطی.
-# توجه: در هاست‌های با دیسک موقت (مثل پلن رایگان Render) این فایل بعد از ری‌استارت
-# پاک می‌شود؛ متغیر محیطی OPENAI_API_KEY راه ماندگار است و /admin راه سریع/چرخش کلید.
-KEY_FILE = os.path.join(os.path.dirname(__file__), ".runtime_key")
-_runtime_key = None
+# --- پیکربندی سرویس هوش مصنوعی ---
+# هر درگاه سازگار با OpenAI پشتیبانی می‌شود: خود OpenAI (کلید sk-...) یا
+# AI Gateway پرسیت (کلید porsit_sk_...، آدرس https://api-gateway.porsit.cloud/v1).
+# اولویت: تنظیماتی که ادمین از صفحهٔ /admin ذخیره کرده (فایل .runtime_config.json)
+# → متغیرهای محیطی OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL.
+# توجه: در هاست‌های با دیسک موقت (مثل پلن رایگان Render) فایل بعد از ری‌استارت
+# پاک می‌شود؛ متغیرهای محیطی راه ماندگارند و /admin راه سریع/چرخش کلید.
+PORSIT_GATEWAY = "https://api-gateway.porsit.cloud/v1"
+PORSIT_DEFAULT_MODEL = "gpt-4.1-mini"
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), ".runtime_config.json")
+_runtime = {}
 try:
-    with open(KEY_FILE) as _f:
-        _runtime_key = _f.read().strip() or None
-except OSError:
+    with open(CONFIG_FILE) as _f:
+        _runtime = json.load(_f) or {}
+except (OSError, ValueError):
     pass
 
 def current_key() -> str:
-    return _runtime_key or os.getenv("OPENAI_API_KEY") or ""
+    return _runtime.get("key") or os.getenv("OPENAI_API_KEY") or ""
 
-def get_client() -> OpenAI:
+def current_base_url() -> str:
+    url = _runtime.get("base_url") or os.getenv("OPENAI_BASE_URL") or ""
+    if not url and current_key().startswith("porsit_sk_"):
+        url = PORSIT_GATEWAY  # کلید پرسیت → درگاه پرسیت
+    return url
+
+def current_model() -> str:
+    model = _runtime.get("model") or os.getenv("OPENAI_MODEL") or ""
+    if not model:
+        model = PORSIT_DEFAULT_MODEL if current_key().startswith("porsit_sk_") else "gpt-4o"
+    return model
+
+def get_client(**kw) -> OpenAI:
     key = current_key()
     if not key:
-        raise HTTPException(503, "کلید OpenAI هنوز تنظیم نشده است؛ از صفحهٔ /admin آن را وارد کنید.")
-    return OpenAI(api_key=key)
+        raise HTTPException(503, "کلید API هنوز تنظیم نشده است؛ از صفحهٔ /admin آن را وارد کنید.")
+    base = current_base_url()
+    return OpenAI(api_key=key, base_url=base or None, **kw)
 
 if not os.path.exists(DB_PATH):
     print("porsit.db یافت نشد — در حال ساخت…")
@@ -135,7 +152,8 @@ class AskReq(BaseModel):
 
 @app.get("/")
 def health():
-    return {"ok": True, "range": [MIN_NAME, MAX_NAME], "key_configured": bool(current_key())}
+    return {"ok": True, "range": [MIN_NAME, MAX_NAME], "key_configured": bool(current_key()),
+            "model": current_model(), "gateway": current_base_url() or "openai"}
 
 # --- پنل ادمین: واردکردن کلید OpenAI بدون رفتن به داشبورد هاست ---
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
@@ -158,13 +176,19 @@ ADMIN_HTML = """<!DOCTYPE html>
 </style></head><body>
 <div class="card">
  <h1>پنل ادمین پُرسیت</h1>
- <p>کلید OpenAI را این‌جا وارد کن؛ کلید فقط روی سرور ذخیره می‌شود و هرگز به فرانت یا Git نمی‌رود.</p>
+ <p>کلید API را این‌جا وارد کن — کلید OpenAI (sk-...) یا کلید درگاه پرسیت (porsit_sk_...).
+ کلید فقط روی سرور ذخیره می‌شود و هرگز به فرانت یا Git نمی‌رود.
+ برای کلید پرسیت، آدرس درگاه و مدل به‌طور خودکار تنظیم می‌شود.</p>
  <label>رمز ادمین (ADMIN_PASSWORD)</label>
  <input id="pw" type="password" autocomplete="current-password">
- <label>کلید OpenAI (sk-...)</label>
- <input id="key" type="password" autocomplete="off" placeholder="sk-...">
- <button onclick="save()">ذخیره و تست کلید</button>
- <button class="alt" onclick="test()">فقط تستِ کلیدِ ذخیره‌شده</button>
+ <label>کلید API</label>
+ <input id="key" type="password" autocomplete="off" placeholder="sk-...  یا  porsit_sk_...">
+ <label>آدرس درگاه — Base URL (اختیاری؛ خالی = تشخیص خودکار)</label>
+ <input id="base" type="text" autocomplete="off" placeholder="https://api-gateway.porsit.cloud/v1">
+ <label>نام مدل (اختیاری؛ خالی = تشخیص خودکار)</label>
+ <input id="model" type="text" autocomplete="off" placeholder="gpt-4.1-mini">
+ <button onclick="save()">ذخیره و تست</button>
+ <button class="alt" onclick="test()">فقط تستِ تنظیماتِ ذخیره‌شده</button>
  <div id="msg"></div>
 </div>
 <script>
@@ -177,35 +201,43 @@ async function call(url, body, busy){
     else{m.textContent='❌ '+(d.detail||'خطا'); m.className='err';}
   }catch(e){m.textContent='❌ '+e; m.className='err';}
 }
-function save(){call('/admin/key',{password:document.getElementById('pw').value,key:document.getElementById('key').value},'در حال ذخیره و تست (تا ۲۰ ثانیه)…');}
-function test(){call('/admin/test',{password:document.getElementById('pw').value},'در حال تست (تا ۲۰ ثانیه)…');}
+function save(){call('/admin/key',{password:document.getElementById('pw').value,key:document.getElementById('key').value,
+  base_url:document.getElementById('base').value,model:document.getElementById('model').value},'در حال ذخیره و تست (تا ۳۰ ثانیه)…');}
+function test(){call('/admin/test',{password:document.getElementById('pw').value},'در حال تست (تا ۳۰ ثانیه)…');}
 </script></body></html>"""
 
 class AdminKeyReq(BaseModel):
     password: str
     key: str
+    base_url: str = ""
+    model: str = ""
 
 class AdminTestReq(BaseModel):
     password: str
 
-def _check_key(key: str):
-    """تست واقعی کلید: یک فراخوانی خیلی کوچک به همان مدلی که /ask استفاده می‌کند."""
+def _check_config(key: str, base_url: str, model: str):
+    """تست واقعی تنظیمات: یک فراخوانی خیلی کوچک به همان درگاه/مدلی که /ask استفاده می‌کند."""
+    where = "درگاه پرسیت" if "porsit" in (base_url or "") else "OpenAI"
     try:
-        OpenAI(api_key=key, timeout=20, max_retries=0).chat.completions.create(
-            model=MODEL, messages=[{"role": "user", "content": "hi"}], max_tokens=1,
+        OpenAI(api_key=key, base_url=base_url or None, timeout=25, max_retries=0).chat.completions.create(
+            model=model, messages=[{"role": "user", "content": "hi"}], max_tokens=1,
         )
-        return True, f"کلید معتبر است و مدل {MODEL} جواب داد — «پرسیدن» باید کار کند."
+        return True, f"کلید معتبر است و مدل {model} از {where} جواب داد — «پرسیدن» باید کار کند."
     except Exception as e:
         s = str(e)
-        if "401" in s or "invalid_api_key" in s or "Incorrect API key" in s:
-            return False, "کلید نامعتبر است. از platform.openai.com → API keys یک کلید تازه بساز و دوباره وارد کن."
+        if "insufficient_balance" in s or "402" in s:
+            return False, "کلید درست است ولی موجودی کیف پول درگاه کافی نیست — کیف پول را شارژ کن."
+        if "401" in s or "invalid_api_key" in s or "Incorrect API key" in s or "Unauthorized" in s:
+            return False, f"کلید برای {where} نامعتبر است — یک کلید تازه بساز/کپی کن و دوباره وارد کن."
         if "insufficient_quota" in s or "exceeded your current quota" in s or "billing" in s.lower():
-            return False, "کلید درست است ولی حساب OpenAI اعتبار ندارد. در platform.openai.com → Billing شارژ کن."
-        if "model" in s.lower() and ("not found" in s.lower() or "does not have access" in s.lower()):
-            return False, f"این حساب به مدل {MODEL} دسترسی ندارد. در تنظیمات سرور OPENAI_MODEL را عوض کن (مثلاً gpt-4o-mini)."
+            return False, "کلید درست است ولی حساب اعتبار ندارد — بخش Billing/کیف پول را شارژ کن."
+        if ("model" in s.lower() and ("not found" in s.lower() or "does not have access" in s.lower())) or "404" in s:
+            return False, f"مدل «{model}» در این درگاه فعال نیست — نام مدل را در فرم عوض کن (مثلاً gpt-4.1-mini یا gpt-4.1-nano)."
         if "429" in s:
             return False, "محدودیت تعداد درخواست — چند دقیقه صبر کن و دوباره تست کن."
-        return False, f"اتصال به OpenAI برقرار نشد: {s[:200]}"
+        if "504" in s or "provider_timeout" in s:
+            return False, "درگاه پاسخ نداد (تایم‌اوت سرویس بالادستی) — دوباره تست کن."
+        return False, f"اتصال به {where} برقرار نشد: {s[:200]}"
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page():
@@ -213,25 +245,29 @@ def admin_page():
 
 @app.post("/admin/key")
 def admin_set_key(req: AdminKeyReq):
-    global _runtime_key
+    global _runtime
     if not ADMIN_PASSWORD:
         raise HTTPException(403, "پنل ادمین غیرفعال است؛ ابتدا متغیر محیطی ADMIN_PASSWORD را روی سرور ست کنید.")
     if not hmac.compare_digest(req.password or "", ADMIN_PASSWORD):
         time.sleep(1)  # کندکردن حدس‌زدن رمز
         raise HTTPException(403, "رمز ادمین نادرست است.")
     key = (req.key or "").strip()
-    if not key.startswith("sk-") or len(key) < 20:
-        raise HTTPException(400, "کلید معتبر به نظر نمی‌رسد (باید با sk- شروع شود).")
-    _runtime_key = key
+    if len(key) < 16 or any(c.isspace() for c in key):
+        raise HTTPException(400, "کلید معتبر به نظر نمی‌رسد — کامل و بدون فاصله کپی‌اش کن.")
+    _runtime = {
+        "key": key,
+        "base_url": (req.base_url or "").strip().rstrip("/"),
+        "model": (req.model or "").strip(),
+    }
     try:
-        with open(KEY_FILE, "w") as f:
-            f.write(key)
-        os.chmod(KEY_FILE, 0o600)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(_runtime, f)
+        os.chmod(CONFIG_FILE, 0o600)
         persisted = "و ذخیره شد"
     except OSError:
         persisted = "(فقط در حافظه — بعد از ری‌استارت باید دوباره وارد شود)"
-    masked = key[:6] + "…" + key[-4:]
-    ok, verdict = _check_key(key)
+    masked = key[:10] + "…" + key[-4:]
+    ok, verdict = _check_config(key, current_base_url(), current_model())
     prefix = "" if ok else "⚠️ "
     return {"message": f"{prefix}کلید {masked} ثبت {persisted}. نتیجهٔ تست: {verdict}"}
 
@@ -242,10 +278,9 @@ def admin_test_key(req: AdminTestReq):
     if not hmac.compare_digest(req.password or "", ADMIN_PASSWORD):
         time.sleep(1)
         raise HTTPException(403, "رمز ادمین نادرست است.")
-    key = current_key()
-    if not key:
+    if not current_key():
         return {"message": "هنوز هیچ کلیدی روی سرور ثبت نیست — کلید را در فرم بالا وارد و ذخیره کن."}
-    ok, verdict = _check_key(key)
+    ok, verdict = _check_config(current_key(), current_base_url(), current_model())
     return {"message": ("✅ " if ok else "⚠️ ") + verdict}
 
 @app.post("/api/v1/ask")
@@ -264,7 +299,7 @@ def ask(req: AskReq):
     try:
         for _ in range(6):
             resp = client.chat.completions.create(
-                model=MODEL, messages=messages, tools=TOOLS,
+                model=current_model(), messages=messages, tools=TOOLS,
                 tool_choice="auto", temperature=0, max_tokens=2200,
             )
             msg = resp.choices[0].message
