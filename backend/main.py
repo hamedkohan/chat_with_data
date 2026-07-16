@@ -116,6 +116,29 @@ TOOLS = [{
     },
 }]
 
+# پیوست پرامپت برای درگاه‌هایی که tool-calling ندارند (مثل AI Gateway پرسیت فعلاً):
+# مدل به‌جای فراخوانی ابزار، کوئری را به‌شکل {"sql":"..."} می‌دهد و ما اجرایش می‌کنیم.
+NOTOOLS_ADDON = """
+
+توجهٔ مهم: در این حالت ابزار run_sql به‌صورت مستقیم در دسترس نیست. هر وقت به داده نیاز داری، «فقط و فقط» این شیء JSON را خروجی بده (بدون هیچ متن یا توضیح دیگر، بدون بک‌تیک):
+{"sql":"یک کوئری SELECT معتبر SQLite"}
+من نتیجهٔ کوئری را به‌صورت JSON برایت می‌فرستم و می‌توانی چند بار پشت‌سرهم کوئری بخواهی.
+وقتی تحلیل کامل شد، پاسخ نهایی را طبق همان قالب JSON گفته‌شده (با headline و ...) بده. هرگز کوئری و پاسخ نهایی را با هم در یک پیام نده."""
+
+_tools_unsupported = set()  # درگاه‌هایی که در همین اجرا معلوم شده tool-calling ندارند
+
+def _extract_json(text: str):
+    """اولین شیء JSON داخل متن مدل را برمی‌گرداند (با تحمل بک‌تیک و متن اطراف)."""
+    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", (text or "").strip())
+    i = s.find("{")
+    if i < 0:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(s[i:])
+        return obj
+    except ValueError:
+        return None
+
 _FORBIDDEN = re.compile(r"\b(insert|update|delete|drop|alter|create|attach|detach|pragma|replace|vacuum)\b", re.I)
 
 def run_sql(sql: str) -> str:
@@ -299,8 +322,11 @@ def ask(req: AskReq):
     messages.append({"role": "user", "content": req.question})
 
     client = get_client()
-    last_sql = ""
     t0 = time.time()
+    base = current_base_url()
+    if base in _tools_unsupported:
+        return _ask_prompt_mode(client, messages, t0)
+    last_sql = ""
     try:
         for _ in range(6):
             resp = client.chat.completions.create(
@@ -323,6 +349,38 @@ def ask(req: AskReq):
             if not (msg.content or "").strip():
                 raise HTTPException(502, "مدل پاسخ خالی برگرداند — دوباره بپرس.")
             return {"text": msg.content, "sql": last_sql, "elapsed_ms": int((time.time()-t0)*1000)}
+        raise HTTPException(502, "تحلیل طولانی شد و کامل نشد — سؤال را ساده‌تر یا مرحله‌به‌مرحله بپرس.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        s = str(e)
+        # درگاه tool-calling ندارد → سوئیچ خودکار به حالت پرامپتی و ادامهٔ همین سؤال
+        if "tool calling" in s.lower() or ("tool" in s.lower() and "invalid_request" in s):
+            _tools_unsupported.add(base)
+            return _ask_prompt_mode(client, messages, t0)
+        raise HTTPException(502, _explain_err(e, base, current_model()))
+
+def _ask_prompt_mode(client, messages, t0):
+    """حالت بدون tool-calling: مدل کوئری را {"sql":"..."} می‌دهد، ما اجرا می‌کنیم و نتیجه را برمی‌گردانیم."""
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT + NOTOOLS_ADDON}] + list(messages[1:])
+    last_sql = ""
+    try:
+        for _ in range(6):
+            resp = client.chat.completions.create(
+                model=current_model(), messages=msgs, temperature=0, max_tokens=2200,
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            obj = _extract_json(content)
+            if isinstance(obj, dict) and obj.get("sql") and "headline" not in obj and "clarify" not in obj:
+                sql = str(obj["sql"])
+                last_sql = sql or last_sql
+                result = run_sql(sql)
+                msgs.append({"role": "assistant", "content": json.dumps({"sql": sql}, ensure_ascii=False)})
+                msgs.append({"role": "user", "content": "نتیجهٔ کوئری: " + result})
+                continue
+            if not content:
+                raise HTTPException(502, "مدل پاسخ خالی برگرداند — دوباره بپرس.")
+            return {"text": content, "sql": last_sql, "elapsed_ms": int((time.time()-t0)*1000)}
         raise HTTPException(502, "تحلیل طولانی شد و کامل نشد — سؤال را ساده‌تر یا مرحله‌به‌مرحله بپرس.")
     except HTTPException:
         raise
