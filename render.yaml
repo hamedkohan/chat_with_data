@@ -13,7 +13,5 @@ services:
       # (ولی env var ماندگارتر است؛ کلیدِ واردشده از پنل بعد از ری‌استارت پاک می‌شود).
       - key: OPENAI_API_KEY
         sync: false
-      - key: OPENAI_MODEL
-        value: gpt-4o
       - key: CORS_ORIGINS
         value: https://hamedkohan.github.io

@@ -24,7 +24,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "porsit.db")
 # توجه: در هاست‌های با دیسک موقت (مثل پلن رایگان Render) فایل بعد از ری‌استارت
 # پاک می‌شود؛ متغیرهای محیطی راه ماندگارند و /admin راه سریع/چرخش کلید.
 PORSIT_GATEWAY = "https://api-gateway.porsit.cloud/v1"
-PORSIT_DEFAULT_MODEL = "gpt-4.1-mini"
+PORSIT_DEFAULT_MODEL = "gpt-5.4-mini"
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), ".runtime_config.json")
 _runtime = {}
 try:
@@ -44,8 +44,13 @@ def current_base_url() -> str:
 
 def current_model() -> str:
     model = _runtime.get("model") or os.getenv("OPENAI_MODEL") or ""
-    if not model:
-        model = PORSIT_DEFAULT_MODEL if current_key().startswith("porsit_sk_") else "gpt-4o"
+    if current_key().startswith("porsit_sk_"):
+        # درگاه پرسیت مدل‌های خانوادهٔ gpt-4o/o1 را ندارد؛ اگر env قدیمی چنین مدلی
+        # را ست کرده باشد (مثل OPENAI_MODEL=gpt-4o از Blueprint اولیه)، نادیده بگیر.
+        if not model or model.startswith(("gpt-4o", "o1", "o3")):
+            model = PORSIT_DEFAULT_MODEL
+    elif not model:
+        model = "gpt-4o"
     return model
 
 def get_client(**kw) -> OpenAI:
