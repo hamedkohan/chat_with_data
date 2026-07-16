@@ -215,6 +215,24 @@ class AdminKeyReq(BaseModel):
 class AdminTestReq(BaseModel):
     password: str
 
+def _explain_err(e: Exception, base_url: str, model: str) -> str:
+    """ترجمهٔ خطای درگاه/OpenAI به پیام فارسیِ قابل‌اقدام."""
+    s = str(e)
+    where = "درگاه پرسیت" if "porsit" in (base_url or "") else "OpenAI"
+    if "insufficient_balance" in s or "402" in s:
+        return "کلید درست است ولی موجودی کیف پول درگاه کافی نیست — کیف پول را شارژ کن."
+    if "401" in s or "invalid_api_key" in s or "Incorrect API key" in s or "Unauthorized" in s:
+        return f"کلید برای {where} نامعتبر است — از پنل /admin یک کلید درست وارد کن."
+    if "insufficient_quota" in s or "exceeded your current quota" in s or "billing" in s.lower():
+        return "کلید درست است ولی حساب اعتبار ندارد — بخش Billing/کیف پول را شارژ کن."
+    if ("model" in s.lower() and ("not found" in s.lower() or "does not have access" in s.lower())) or "404" in s:
+        return f"مدل «{model}» در این درگاه فعال نیست — در پنل /admin نام مدل را عوض کن (مثلاً gpt-4.1-mini یا gpt-4.1-nano)."
+    if "429" in s:
+        return "محدودیت تعداد درخواست — چند دقیقه صبر کن و دوباره امتحان کن."
+    if "504" in s or "provider_timeout" in s or "timed out" in s.lower() or "timeout" in s.lower():
+        return "درگاه هوش مصنوعی دیر پاسخ داد — دوباره امتحان کن."
+    return f"اتصال به {where} برقرار نشد: {s[:200]}"
+
 def _check_config(key: str, base_url: str, model: str):
     """تست واقعی تنظیمات: یک فراخوانی خیلی کوچک به همان درگاه/مدلی که /ask استفاده می‌کند."""
     where = "درگاه پرسیت" if "porsit" in (base_url or "") else "OpenAI"
@@ -224,20 +242,7 @@ def _check_config(key: str, base_url: str, model: str):
         )
         return True, f"کلید معتبر است و مدل {model} از {where} جواب داد — «پرسیدن» باید کار کند."
     except Exception as e:
-        s = str(e)
-        if "insufficient_balance" in s or "402" in s:
-            return False, "کلید درست است ولی موجودی کیف پول درگاه کافی نیست — کیف پول را شارژ کن."
-        if "401" in s or "invalid_api_key" in s or "Incorrect API key" in s or "Unauthorized" in s:
-            return False, f"کلید برای {where} نامعتبر است — یک کلید تازه بساز/کپی کن و دوباره وارد کن."
-        if "insufficient_quota" in s or "exceeded your current quota" in s or "billing" in s.lower():
-            return False, "کلید درست است ولی حساب اعتبار ندارد — بخش Billing/کیف پول را شارژ کن."
-        if ("model" in s.lower() and ("not found" in s.lower() or "does not have access" in s.lower())) or "404" in s:
-            return False, f"مدل «{model}» در این درگاه فعال نیست — نام مدل را در فرم عوض کن (مثلاً gpt-4.1-mini یا gpt-4.1-nano)."
-        if "429" in s:
-            return False, "محدودیت تعداد درخواست — چند دقیقه صبر کن و دوباره تست کن."
-        if "504" in s or "provider_timeout" in s:
-            return False, "درگاه پاسخ نداد (تایم‌اوت سرویس بالادستی) — دوباره تست کن."
-        return False, f"اتصال به {where} برقرار نشد: {s[:200]}"
+        return False, _explain_err(e, base_url, model)
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page():
@@ -315,7 +320,11 @@ def ask(req: AskReq):
                     result = run_sql(sql)
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                 continue
-            return {"text": msg.content or "", "sql": last_sql, "elapsed_ms": int((time.time()-t0)*1000)}
-        return {"text": "", "sql": last_sql, "elapsed_ms": int((time.time()-t0)*1000)}
+            if not (msg.content or "").strip():
+                raise HTTPException(502, "مدل پاسخ خالی برگرداند — دوباره بپرس.")
+            return {"text": msg.content, "sql": last_sql, "elapsed_ms": int((time.time()-t0)*1000)}
+        raise HTTPException(502, "تحلیل طولانی شد و کامل نشد — سؤال را ساده‌تر یا مرحله‌به‌مرحله بپرس.")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, f"خطای مدل: {e}")
+        raise HTTPException(502, _explain_err(e, current_base_url(), current_model()))
