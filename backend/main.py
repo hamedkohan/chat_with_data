@@ -257,6 +257,10 @@ def _explain_err(e: Exception, base_url: str, model: str) -> str:
         return f"مدل «{model}» در این درگاه فعال نیست — در پنل /admin نام مدل را عوض کن (مثلاً gpt-4.1-mini یا gpt-4.1-nano)."
     if "429" in s:
         return "محدودیت تعداد درخواست — چند دقیقه صبر کن و دوباره امتحان کن."
+    if "routing_failed" in s:
+        return f"خود درگاه در مسیریابی به مدل «{model}» خطا داد (routing_failed) — مشکل از سمت درگاه است؛ دوباره امتحان کن یا در پنل /admin مدل دیگری بگذار."
+    if "model_not_allowed" in s:
+        return f"این کلید اجازهٔ استفاده از مدل «{model}» را ندارد — در پنل /admin مدل مجاز را بنویس یا محدودیت کلید را در پنل درگاه بردار."
     if "504" in s or "provider_timeout" in s or "timed out" in s.lower() or "timeout" in s.lower():
         return "درگاه هوش مصنوعی دیر پاسخ داد — دوباره امتحان کن."
     return f"اتصال به {where} برقرار نشد: {s[:200]}"
