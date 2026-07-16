@@ -24,7 +24,8 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "porsit.db")
 # توجه: در هاست‌های با دیسک موقت (مثل پلن رایگان Render) فایل بعد از ری‌استارت
 # پاک می‌شود؛ متغیرهای محیطی راه ماندگارند و /admin راه سریع/چرخش کلید.
 PORSIT_GATEWAY = "https://api-gateway.porsit.cloud/v1"
-PORSIT_DEFAULT_MODEL = "gpt-5.4-mini"
+# نکته: gpt-5.4-mini در درگاه فعلاً routing_failed می‌دهد؛ تا رفع آن، پیش‌فرض mini 4.1 است.
+PORSIT_DEFAULT_MODEL = "gpt-4.1-mini"
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), ".runtime_config.json")
 _runtime = {}
 try:
